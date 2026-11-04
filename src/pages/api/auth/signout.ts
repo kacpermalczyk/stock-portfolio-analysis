@@ -1,10 +1,7 @@
 import type { APIRoute } from "astro";
-import { createClient } from "@/lib/supabase";
+import { SESSION_COOKIE } from "@/lib/auth";
 
-export const POST: APIRoute = async (context) => {
-  const supabase = createClient(context.request.headers, context.cookies);
-  if (supabase) {
-    await supabase.auth.signOut();
-  }
+export const POST: APIRoute = (context) => {
+  context.cookies.delete(SESSION_COOKIE, { path: "/" });
   return context.redirect("/auth/signin");
 };

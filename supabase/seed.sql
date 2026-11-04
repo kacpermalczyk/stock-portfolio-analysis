@@ -1,1 +1,0 @@
--- MyPortfelik has no public seed data. Create the owner manually in Supabase Auth.

@@ -50,6 +50,22 @@ describe("PortfolioResult", () => {
     expect(html).toContain("Rachunek PLN");
   });
 
+  it("shows the XIRR as partial when diagnostics are present but XIRR was computed", () => {
+    const html = renderToStaticMarkup(
+      <PortfolioResult
+        result={{
+          ...result,
+          xirr: "0.1234",
+          diagnostics: [{ code: "UNKNOWN_OPERATION", message: "Nieznana operacja" }],
+        }}
+      />,
+    );
+
+    expect(html).not.toContain("Brak wyniku");
+    expect(html).toContain("jest częściowy");
+    expect(html).toContain("Nieznana operacja");
+  });
+
   it("shows a blocked result when diagnostics are present", () => {
     const html = renderToStaticMarkup(
       <PortfolioResult

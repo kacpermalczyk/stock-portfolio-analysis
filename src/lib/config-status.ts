@@ -1,4 +1,4 @@
-import { SUPABASE_URL, SUPABASE_KEY } from "astro:env/server";
+import { isAuthConfigured } from "@/lib/auth";
 
 export interface ConfigStatus {
   name: string;
@@ -10,11 +10,9 @@ export interface ConfigStatus {
 
 export const configStatuses: ConfigStatus[] = [
   {
-    name: "Supabase",
-    configured: Boolean(SUPABASE_URL && SUPABASE_KEY),
-    message: "Supabase nie jest skonfigurowany — funkcje uwierzytelniania są wyłączone.",
-    docsUrl: "https://github.com/przeprogramowani/10x-astro-starter#supabase-configuration",
-    docsLabel: "Zobacz instrukcję konfiguracji",
+    name: "Owner login",
+    configured: isAuthConfigured(),
+    message: "Logowanie właściciela nie jest skonfigurowane — ustaw OWNER_EMAIL, OWNER_PASSWORD_HASH i SESSION_SECRET.",
   },
 ];
 

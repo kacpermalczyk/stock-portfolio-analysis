@@ -10,11 +10,19 @@ const INTERNAL_TYPES = new Set([
   "Free funds interest tax",
   "SEC fee",
   "IKE tax",
+  "Fractional shares",
+  "Commission",
+  "Close trade",
+  "Swap",
+  "Tax IFTT",
+  "Dividend from foreign company on PL market",
+  "Correction",
 ]);
 const TRANSFER_TYPES = new Set(["Transfer", "Subaccount transfer", "IKE deposit", "IKE return partial"]);
 
 export function classifyOperation(operation: XtbCashOperation, currency: PortfolioCurrency): ClassifiedOperation {
-  if (operation.type === "Deposit") {
+  // IKE cash transfer in: money topped up from an outside bank into the IKE account, so it is a deposit.
+  if (operation.type === "Deposit" || operation.type === "IKE cash transfer in") {
     return { operation, currency, classification: "external", cashFlowSign: -1 };
   }
   if (operation.type === "Withdrawal") {

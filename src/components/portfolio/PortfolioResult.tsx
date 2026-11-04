@@ -16,7 +16,8 @@ function percent(value: string): string {
 }
 
 export function PortfolioResult({ result }: { result: PortfolioImportResult }) {
-  const hasBlockedResult = result.diagnostics.length > 0 || result.xirr === null;
+  const hasBlockedResult = result.xirr === null;
+  const isPartialResult = result.diagnostics.length > 0;
   const profitByCurrency = result.accounts
     .flatMap((account) => account.products)
     .reduce<Partial<Record<BaseCurrency, number>>>((totals, product) => {
@@ -80,7 +81,7 @@ export function PortfolioResult({ result }: { result: PortfolioImportResult }) {
           <div>
             <p className="text-sm text-slate-600">Stopa zwrotu od początku</p>
             <p
-              className={`mt-1 text-2xl font-semibold tabular-nums ${hasBlockedResult ? "text-amber-800" : "text-indigo-800"}`}
+              className={`mt-1 text-2xl font-semibold tabular-nums ${hasBlockedResult || isPartialResult ? "text-amber-800" : "text-indigo-800"}`}
             >
               {hasBlockedResult ? "Brak wyniku" : percent(result.xirr ?? "0")}
             </p>
@@ -99,9 +100,13 @@ export function PortfolioResult({ result }: { result: PortfolioImportResult }) {
         </div>
       </div>
 
-      {hasBlockedResult && (
+      {isPartialResult && (
         <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm text-amber-950">
-          <p className="font-semibold">Wynik stopy zwrotu został wstrzymany</p>
+          <p className="font-semibold">
+            {hasBlockedResult
+              ? "Wynik stopy zwrotu został wstrzymany"
+              : "Wynik stopy zwrotu jest częściowy. Poniższe pozycje nie są w nim uwzględnione"}
+          </p>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             {result.diagnostics.map((item, index) => (
               <li key={`${item.code}-${item.operationId ?? index}`}>{item.message}</li>

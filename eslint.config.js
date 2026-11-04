@@ -73,6 +73,12 @@ export default tseslint.config(
   includeIgnoreFile(gitignorePath),
   baseConfig,
   reactConfig,
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { process: "readonly", Buffer: "readonly", console: "readonly" },
+    },
+  },
   eslintPluginAstro.configs["flat/recommended"],
   ...eslintPluginAstro.configs["flat/jsx-a11y-recommended"],
   astroConfig,

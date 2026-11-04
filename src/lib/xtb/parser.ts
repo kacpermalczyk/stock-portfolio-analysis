@@ -14,6 +14,10 @@ import type {
 } from "./types";
 import { XlsxWorkbook, type SheetRow } from "./workbook";
 
+// XTB exports label the Open Positions summary either as "Value"/"Profit" or "Open position value"/"Open position profit".
+const VALUE_METRICS = ["Value", "Open position value"];
+const PROFIT_METRICS = ["Profit", "Open position profit"];
+
 type HeaderMap = Map<string, string>;
 
 function rowValues(row: SheetRow): string[] {
@@ -218,7 +222,7 @@ function parseSnapshots(
   }
   const profitByProduct = new Map<string, Decimal>();
   for (const row of rows.slice(summaryIndex + 1)) {
-    if (get(row, headers, "Metric") !== "Profit") continue;
+    if (!PROFIT_METRICS.includes(get(row, headers, "Metric") ?? "")) continue;
     const product = get(row, headers, "Product");
     if (!product) continue;
     profitByProduct.set(
@@ -232,7 +236,7 @@ function parseSnapshots(
   }
 
   return rows.slice(summaryIndex + 1).flatMap((row) => {
-    if (get(row, headers, "Metric") !== "Value") return [];
+    if (!VALUE_METRICS.includes(get(row, headers, "Metric") ?? "")) return [];
     const product = get(row, headers, "Product");
     if (!product) return [];
     const currency = currencyFrom(get(row, headers, "Currency"), product, sourceName);

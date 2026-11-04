@@ -14,6 +14,23 @@ function withinTimeWindow(left: ClassifiedOperation, right: ClassifiedOperation)
   );
 }
 
+/** Prefers the candidate closest in time, then closest in amount. Returns null only on an exact tie. */
+function pickBestMatch(
+  outgoing: ClassifiedOperation,
+  matches: { incoming: ClassifiedOperation; difference: Decimal }[],
+): { incoming: ClassifiedOperation; difference: Decimal } | null {
+  if (matches.length === 0) return null;
+  const ranked = matches
+    .map((match) => ({
+      ...match,
+      timeGap: Math.abs(Date.parse(outgoing.operation.occurredAt) - Date.parse(match.incoming.operation.occurredAt)),
+    }))
+    .sort((left, right) => left.timeGap - right.timeGap || left.difference.comparedTo(right.difference));
+  const [first, second] = ranked;
+  if (second && second.timeGap === first.timeGap && second.difference.equals(first.difference)) return null;
+  return first;
+}
+
 export async function pairTransfers(
   operations: ClassifiedOperation[],
   provider: FxProvider,
@@ -79,10 +96,11 @@ export async function pairTransfers(
       const tolerance = Decimal.max(new Decimal("0.01"), outgoingPln.amount.times("0.001"));
       if (difference.lte(tolerance)) matches.push({ incoming, difference });
     }
-    if (matches.length === 1) {
+    const best = pickBestMatch(outgoing, matches);
+    if (best) {
       used.add(operationKey(outgoing));
-      used.add(operationKey(matches[0].incoming));
-      pairs.push({ outgoing, incoming: matches[0].incoming, differencePln: matches[0].difference });
+      used.add(operationKey(best.incoming));
+      pairs.push({ outgoing, incoming: best.incoming, differencePln: best.difference });
     } else if (matches.length > 1) {
       ambiguous.push(outgoing);
     }

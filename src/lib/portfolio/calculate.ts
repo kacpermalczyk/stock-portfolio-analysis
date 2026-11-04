@@ -3,7 +3,14 @@ import type { ParsedXtbPortfolio, PortfolioCurrency } from "@/lib/xtb/types";
 import { classifyOperation } from "./classify";
 import { convertMoney } from "./fx";
 import { pairTransfers } from "./transfers";
-import type { FxProvider, FxQuote, MoneyCashFlow, PortfolioDiagnostic, TransferPair } from "./types";
+import type {
+  ClassifiedOperation,
+  FxProvider,
+  FxQuote,
+  MoneyCashFlow,
+  PortfolioDiagnostic,
+  TransferPair,
+} from "./types";
 import { calculateXirr, XirrError } from "./xirr";
 
 export interface PortfolioCalculation {
@@ -65,13 +72,6 @@ export async function calculatePortfolio(
   }
 
   const transferResult = await pairTransfers(classified, provider);
-  for (const item of transferResult.unmatched) {
-    diagnostics.push({
-      code: "UNMATCHED_TRANSFER",
-      message: "Nie znaleziono drugiej strony transferu.",
-      operationId: item.operation.operationId,
-    });
-  }
   for (const item of transferResult.ambiguous) {
     diagnostics.push({
       code: "AMBIGUOUS_TRANSFER",
@@ -84,7 +84,17 @@ export async function calculatePortfolio(
   const flowByDate = new Map<string, MoneyCashFlow>();
   let depositedCapital = new Decimal(0);
   let withdrawnCapital = new Decimal(0);
-  for (const item of classified.filter((operation) => operation.classification === "external")) {
+  // Transfers with no counterpart among the reported accounts left (or entered) the portfolio: drawdown or deposit.
+  const unpairedTransfers: ClassifiedOperation[] = transferResult.unmatched.map((item) => ({
+    ...item,
+    classification: "external",
+    cashFlowSign: item.operation.amount.isNegative() ? 1 : -1,
+  }));
+  const externalItems = [
+    ...classified.filter((operation) => operation.classification === "external"),
+    ...unpairedTransfers,
+  ];
+  for (const item of externalItems) {
     const date = item.operation.occurredAt.slice(0, 10);
     const signedAmount = item.operation.amount.abs().times(item.cashFlowSign);
     const converted = await convertMoney(signedAmount, item.currency, baseCurrency, date, provider);
@@ -135,14 +145,13 @@ export async function calculatePortfolio(
   const endingFlow: MoneyCashFlow = { date: valuationDate, amount: totalValue, sourceOperationIds: [] };
   const cashFlows = [...flowByDate.values(), endingFlow].sort((left, right) => left.date.localeCompare(right.date));
 
+  // Computed even when diagnostics exist. Unresolved operations contribute no cash flow, so the UI marks the result as partial.
   let xirr: Decimal | null = null;
-  if (diagnostics.length === 0) {
-    try {
-      xirr = calculateXirr(cashFlows);
-    } catch (error) {
-      if (!(error instanceof XirrError)) throw error;
-      diagnostics.push({ code: "XIRR_UNAVAILABLE", message: error.message });
-    }
+  try {
+    xirr = calculateXirr(cashFlows);
+  } catch (error) {
+    if (!(error instanceof XirrError)) throw error;
+    diagnostics.push({ code: "XIRR_UNAVAILABLE", message: error.message });
   }
 
   return {

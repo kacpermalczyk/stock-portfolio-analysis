@@ -1,10 +1,9 @@
 import Decimal from "decimal.js";
 import type { APIRoute } from "astro";
-import { isOwner } from "@/lib/auth";
 import { convertMoney } from "@/lib/portfolio/fx";
 import { NbpClient } from "@/lib/portfolio/nbp-client";
 import { YahooPriceClient } from "@/lib/portfolio/yahoo-client";
-import { createClient } from "@/lib/supabase";
+import { getDb } from "@/lib/db";
 import type { PortfolioCurrency } from "@/lib/xtb/types";
 
 function previousDate(days: number): string {
@@ -13,26 +12,39 @@ function previousDate(days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-export const GET: APIRoute = async (context) => {
-  if (!isOwner(context.locals.user)) return Response.json({ error: "Brak dostępu." }, { status: 403 });
-  const supabase = createClient(context.request.headers, context.cookies);
-  if (!supabase) return Response.json({ error: "Baza danych nie jest skonfigurowana." }, { status: 503 });
+type Row = Record<string, string | number | null>;
 
-  const { data: latest, error: importError } = await supabase
-    .from("portfolio_imports")
-    .select("id,base_currency,valuation_date,total_value")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (importError) return Response.json({ error: "Nie udało się odczytać ostatniego importu." }, { status: 500 });
-  if (!latest) return Response.json({ available: false });
+export const GET: APIRoute = async (context) => {
+  if (!context.locals.user) return Response.json({ error: "Brak dostępu." }, { status: 403 });
+  const db = getDb();
+
+  let latest: Row | null;
+  let positions: Row[];
+  let cfdLots: Row[];
+  try {
+    latest = await db
+      .prepare(
+        "SELECT id, base_currency, valuation_date, total_value FROM portfolio_imports ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      )
+      .first<Row>();
+  } catch {
+    return Response.json({ error: "Nie udało się odczytać ostatniego importu." }, { status: 500 });
+  }
+  if (!latest?.valuation_date) return Response.json({ available: false });
   const latestImport = latest;
 
-  const { data: positions, error: positionsError } = await supabase
-    .from("portfolio_open_positions")
-    .select("ticker,category,volume,report_value,report_profit,account_currency")
-    .eq("import_id", latestImport.id);
-  if (positionsError) return Response.json({ error: "Nie udało się odczytać pozycji." }, { status: 500 });
+  try {
+    positions = (
+      await db
+        .prepare(
+          "SELECT ticker, category, volume, report_value, report_profit, account_currency FROM portfolio_open_positions WHERE import_id = ?",
+        )
+        .bind(latestImport.id)
+        .all<Row>()
+    ).results;
+  } catch {
+    return Response.json({ error: "Nie udało się odczytać pozycji." }, { status: 500 });
+  }
   if (positions.length === 0) {
     return Response.json({
       available: false,
@@ -40,11 +52,18 @@ export const GET: APIRoute = async (context) => {
       valuationDate: String(latestImport.valuation_date),
     });
   }
-  const { data: cfdLots, error: cfdError } = await supabase
-    .from("portfolio_open_cfd_lots")
-    .select("ticker,direction,volume,open_price,account_currency")
-    .eq("import_id", latestImport.id);
-  if (cfdError) return Response.json({ error: "Nie udało się odczytać pozycji CFD." }, { status: 500 });
+  try {
+    cfdLots = (
+      await db
+        .prepare(
+          "SELECT ticker, direction, volume, open_price, account_currency FROM portfolio_open_cfd_lots WHERE import_id = ?",
+        )
+        .bind(latestImport.id)
+        .all<Row>()
+    ).results;
+  } catch {
+    return Response.json({ error: "Nie udało się odczytać pozycji CFD." }, { status: 500 });
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const priceClient = new YahooPriceClient();

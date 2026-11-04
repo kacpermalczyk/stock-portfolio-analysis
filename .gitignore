@@ -21,9 +21,6 @@ pnpm-debug.log*
 .dev.vars
 .wrangler/
 
-# local Supabase runtime state
-supabase/.temp/
-
 # private XTB exports placed in the repository root
 /*.zip
 /*.jpeg

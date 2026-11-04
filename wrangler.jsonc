@@ -18,4 +18,14 @@
       "service": "myportfelik-market-data",
     },
   ],
+  // Local SQLite via Cloudflare D1. `wrangler dev` / `astro dev` keep the database in .wrangler/state.
+  // For a real deployment, run `npx wrangler d1 create myportfelik` and replace database_id.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "myportfelik",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
 }

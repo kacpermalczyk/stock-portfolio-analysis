@@ -2,20 +2,18 @@
 import Layout from "@/layouts/Layout.astro";
 import PortfolioHistoryChart from "@/components/portfolio/PortfolioHistoryChart";
 import { getPolishCpi } from "@/lib/portfolio/inflation";
-import { createClient } from "@/lib/supabase";
+import { getDb } from "@/lib/db";
 import { YahooPriceClient, type DailyPrice } from "@/lib/portfolio/yahoo-client";
 import { ArrowLeft, History } from "lucide-react";
 
-const supabase = createClient(Astro.request.headers, Astro.cookies);
-const { data } = supabase
-  ? await supabase
-      .from("portfolio_history_points")
-      .select(
-        "date,total_value,net_invested_capital,total_profit,benchmark_value,msci_world_value,nasdaq_100_value,emerging_markets_value,semiconductor_value,base_currency",
-      )
-      .order("date")
-  : { data: null };
-const rows = data ?? [];
+type HistoryRow = Record<string, string | number | null>;
+const rows = (
+  await getDb()
+    .prepare(
+      "SELECT date, total_value, net_invested_capital, total_profit, benchmark_value, msci_world_value, nasdaq_100_value, emerging_markets_value, semiconductor_value, base_currency FROM portfolio_history_points ORDER BY date",
+    )
+    .all<HistoryRow>()
+).results;
 let sp500Fallback: DailyPrice[] = [];
 let msciWorldFallback: DailyPrice[] = [];
 let nasdaq100Fallback: DailyPrice[] = [];
@@ -95,7 +93,7 @@ const points = rows.map((row) => ({
     return inflationBaseline != null && value != null ? (value / inflationBaseline) * 100 : null;
   })(),
 }));
-const currency = String(data?.at(-1)?.base_currency ?? "PLN");
+const currency = String(rows.at(-1)?.base_currency ?? "PLN");
 ---
 
 <Layout title="Historia portfela — MyPortfelik">

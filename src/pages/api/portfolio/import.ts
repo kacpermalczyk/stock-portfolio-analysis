@@ -1,25 +1,23 @@
 import type { APIRoute } from "astro";
 import { env } from "cloudflare:workers";
-import { isOwner } from "@/lib/auth";
 import { calculatePortfolio } from "@/lib/portfolio/calculate";
 import { sha256Hex } from "@/lib/portfolio/fingerprint";
 import { YahooPriceClient } from "@/lib/portfolio/yahoo-client";
 import { NbpClient } from "@/lib/portfolio/nbp-client";
-import { reconstructHistory } from "@/lib/portfolio/history";
+import { reconstructHistory, type HistoryPoint } from "@/lib/portfolio/history";
 import { createMarketDataFetcher } from "@/lib/portfolio/market-data-fetcher";
 import { saveOpenPositions, savePortfolioHistory, savePortfolioImport } from "@/lib/portfolio/repository";
-import { createClient } from "@/lib/supabase";
+import { getDb } from "@/lib/db";
 import { SUPPORTED_CURRENCIES } from "@/lib/xtb/constants";
 import { XtbImportError } from "@/lib/xtb/errors";
 import { parseXtbPortfolio } from "@/lib/xtb/parser";
 import type { PortfolioCurrency } from "@/lib/xtb/types";
 
 export const POST: APIRoute = async (context) => {
-  if (!isOwner(context.locals.user)) {
+  if (!context.locals.user) {
     return Response.json({ error: "Brak dostępu." }, { status: 403 });
   }
-  const supabase = createClient(context.request.headers, context.cookies);
-  if (!supabase) return Response.json({ error: "Baza danych nie jest skonfigurowana." }, { status: 503 });
+  const db = getDb();
 
   try {
     const form = await context.request.formData();
@@ -36,14 +34,20 @@ export const POST: APIRoute = async (context) => {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const portfolio = parseXtbPortfolio(bytes, file.name);
     const calculation = await calculatePortfolio(portfolio, requestedCurrency as PortfolioCurrency, new NbpClient());
+    if (!calculation.valuationDate) {
+      throw new XtbImportError("INVALID_CELL", "Raport nie zawiera wycen pozycji (sekcja Open Positions).", {
+        file: file.name,
+        sheet: "Open Positions",
+      });
+    }
     const fingerprint = await sha256Hex(bytes);
-    const importId = await savePortfolioImport(supabase, fingerprint, portfolio, calculation);
-    await saveOpenPositions(supabase, importId, context.locals.user.id, portfolio);
+    const importId = await savePortfolioImport(db, fingerprint, portfolio, calculation);
+    await saveOpenPositions(db, importId, portfolio);
     const priceClient = new YahooPriceClient(createMarketDataFetcher(env.MARKET_DATA));
-    let history = { points: [], unavailableTickers: [] as string[] };
+    let history = { points: [] as HistoryPoint[], unavailableTickers: [] as string[] };
     try {
       history = await reconstructHistory(portfolio, calculation, priceClient);
-      await savePortfolioHistory(supabase, importId, context.locals.user.id, calculation.baseCurrency, history.points);
+      await savePortfolioHistory(db, importId, calculation.baseCurrency, history.points);
     } catch {
       // The portfolio calculation is complete; history can be rebuilt on the next import.
     }

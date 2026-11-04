@@ -1,33 +1,13 @@
 import { defineMiddleware } from "astro:middleware";
-import { isOwner } from "@/lib/auth";
-import { createClient } from "@/lib/supabase";
+import { getSessionUser, SESSION_COOKIE } from "@/lib/auth";
 
 const PROTECTED_ROUTES = ["/dashboard", "/history", "/api/portfolio"];
 
 export const onRequest = defineMiddleware(async (context, next) => {
-  const supabase = createClient(context.request.headers, context.cookies);
+  context.locals.user = await getSessionUser(context.cookies.get(SESSION_COOKIE)?.value);
 
-  if (supabase) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    context.locals.user = user ?? null;
-  } else {
-    context.locals.user = null;
-  }
-
-  if (PROTECTED_ROUTES.some((route) => context.url.pathname.startsWith(route))) {
-    const user = context.locals.user;
-
-    if (!user) {
-      return context.redirect("/auth/signin");
-    }
-
-    if (!isOwner(user)) {
-      await supabase?.auth.signOut();
-      context.locals.user = null;
-      return context.redirect("/auth/signin?error=access_denied");
-    }
+  if (PROTECTED_ROUTES.some((route) => context.url.pathname.startsWith(route)) && !context.locals.user) {
+    return context.redirect("/auth/signin");
   }
 
   return next();

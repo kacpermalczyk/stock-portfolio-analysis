@@ -1,158 +1,337 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import Decimal from "decimal.js";
 import type { ParsedXtbPortfolio } from "@/lib/xtb/types";
 import { classifyOperation } from "./classify";
 import type { PortfolioCalculation } from "./calculate";
 import type { HistoryPoint } from "./history";
 import { sha256Hex } from "./fingerprint";
 
+type Value = string | number | null;
+
+// D1 limits bound parameters per statement and statements per batch; stay well under both.
+const MAX_PARAMS_PER_STATEMENT = 90;
+const MAX_STATEMENTS_PER_BATCH = 100;
+
+const HISTORY_COLUMNS = [
+  "import_id",
+  "date",
+  "base_currency",
+  "total_value",
+  "net_invested_capital",
+  "total_profit",
+  "benchmark_value",
+  "msci_world_value",
+  "nasdaq_100_value",
+  "emerging_markets_value",
+  "semiconductor_value",
+];
+const HISTORY_UPSERT_SUFFIX = ` ON CONFLICT (date, base_currency) DO UPDATE SET
+  import_id = excluded.import_id,
+  total_value = excluded.total_value,
+  net_invested_capital = excluded.net_invested_capital,
+  total_profit = excluded.total_profit,
+  benchmark_value = excluded.benchmark_value,
+  msci_world_value = excluded.msci_world_value,
+  nasdaq_100_value = excluded.nasdaq_100_value,
+  emerging_markets_value = excluded.emerging_markets_value,
+  semiconductor_value = excluded.semiconductor_value`;
+const POSITION_COLUMNS = [
+  "import_id",
+  "account_currency",
+  "product",
+  "ticker",
+  "instrument",
+  "category",
+  "volume",
+  "report_value",
+  "report_profit",
+];
+const CFD_LOT_COLUMNS = [
+  "import_id",
+  "account_currency",
+  "ticker",
+  "position_key",
+  "direction",
+  "volume",
+  "open_price",
+];
+
+/** Builds multi-row INSERT statements, each within the bound-parameter limit. */
+function insertStatements(
+  db: D1Database,
+  table: string,
+  columns: string[],
+  rows: Value[][],
+  suffix = "",
+): D1PreparedStatement[] {
+  const rowsPerStatement = Math.max(1, Math.floor(MAX_PARAMS_PER_STATEMENT / columns.length));
+  const placeholder = `(${columns.map(() => "?").join(", ")})`;
+  const statements: D1PreparedStatement[] = [];
+  for (let start = 0; start < rows.length; start += rowsPerStatement) {
+    const chunk = rows.slice(start, start + rowsPerStatement);
+    const sql = `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${chunk.map(() => placeholder).join(", ")}${suffix}`;
+    statements.push(db.prepare(sql).bind(...chunk.flat()));
+  }
+  return statements;
+}
+
+/** Executes statements in order. Each batch is atomic; a failure stops further batches. */
+async function runStatements(db: D1Database, statements: D1PreparedStatement[]): Promise<void> {
+  for (let start = 0; start < statements.length; start += MAX_STATEMENTS_PER_BATCH) {
+    await db.batch(statements.slice(start, start + MAX_STATEMENTS_PER_BATCH));
+  }
+}
+
+function errorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : "unknown database error";
+}
+
 export async function savePortfolioImport(
-  client: SupabaseClient,
+  db: D1Database,
   fingerprint: string,
   portfolio: ParsedXtbPortfolio,
   calculation: PortfolioCalculation,
 ): Promise<string> {
-  const accounts = await Promise.all(
-    portfolio.accounts.map(async (account) => ({
-      fingerprint: await sha256Hex(account.accountNumber),
-      currency: account.currency,
-      reportFrom: account.reportFrom,
-      reportTo: account.reportTo,
-      operations: account.cashOperations.map((operation) => ({
-        key: operation.operationId,
-        type: operation.type,
-        occurredAt: operation.occurredAt,
-        amount: operation.amount.toString(),
-        product: operation.product,
-        classification: classifyOperation(operation, account.currency).classification,
-      })),
-      snapshots: account.snapshots.map((snapshot) => ({
-        product: snapshot.product,
-        currency: snapshot.currency,
-        valuationAt: snapshot.valuationAt,
-        securitiesValue: snapshot.securitiesValue.toString(),
-        cashValue: snapshot.reconstructedCash.toString(),
-      })),
-    })),
-  );
-  const payload = {
-    fingerprint,
-    baseCurrency: calculation.baseCurrency,
-    valuationDate: calculation.valuationDate,
-    securitiesValue: calculation.securitiesValue.toString(),
-    cashValue: calculation.cashValue.toString(),
-    totalValue: calculation.totalValue.toString(),
-    xirr: calculation.xirr?.toString() ?? "",
-    diagnostics: calculation.diagnostics,
-    fxQuotes: calculation.fxQuotes.map((quote) => ({
-      currency: quote.currency,
-      rateToPln: quote.rateToPln.toString(),
-      requestedDate: quote.requestedDate,
-      effectiveDate: quote.effectiveDate,
-      tableNo: quote.tableNo,
-      source: quote.source,
-    })),
-    accounts,
-  };
+  const capital = [
+    calculation.depositedCapital.toString(),
+    calculation.withdrawnCapital.toString(),
+    calculation.netInvestedCapital.toString(),
+    calculation.totalProfit.toString(),
+    calculation.simpleReturn?.toString() ?? null,
+  ];
 
-  // Supabase returns `any` until generated Database types are introduced with the first schema.
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-  const { data, error } = await client.rpc("save_portfolio_import", { payload });
-  if (error) {
-    const databaseError = error as { message?: unknown; code?: unknown };
-    const detail = typeof databaseError.message === "string" ? databaseError.message : "unknown database error";
-    throw new Error(`Nie udało się zapisać importu portfela: ${detail}`);
+  // The same statement (fingerprint + base currency) is idempotent: reuse the stored import and refresh its metrics.
+  const existing = await db
+    .prepare("SELECT id FROM portfolio_imports WHERE fingerprint = ? AND base_currency = ?")
+    .bind(fingerprint, calculation.baseCurrency)
+    .first<{ id: string }>();
+  if (existing) {
+    await db
+      .prepare(
+        `UPDATE portfolio_imports SET deposited_capital = ?, withdrawn_capital = ?, net_invested_capital = ?,
+           total_profit = ?, simple_return = ? WHERE id = ?`,
+      )
+      .bind(...capital, existing.id)
+      .run();
+    return existing.id;
   }
-  if (typeof data !== "string") throw new Error("Baza nie zwróciła identyfikatora importu.");
 
-  const { error: updateError } = await client
-    .from("portfolio_imports")
-    .update({
-      deposited_capital: calculation.depositedCapital.toString(),
-      withdrawn_capital: calculation.withdrawnCapital.toString(),
-      net_invested_capital: calculation.netInvestedCapital.toString(),
-      total_profit: calculation.totalProfit.toString(),
-      simple_return: calculation.simpleReturn?.toString() ?? null,
-    })
-    .eq("id", data);
-  if (updateError) throw new Error(`Nie udało się zapisać punktu historii: ${updateError.message}`);
-  return data;
+  const importId = crypto.randomUUID();
+  const statements: D1PreparedStatement[] = [
+    db
+      .prepare(
+        `INSERT INTO portfolio_imports (id, fingerprint, base_currency, valuation_date, securities_value, cash_value,
+           total_value, xirr, diagnostics, fx_quotes, deposited_capital, withdrawn_capital, net_invested_capital,
+           total_profit, simple_return)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        importId,
+        fingerprint,
+        calculation.baseCurrency,
+        calculation.valuationDate,
+        calculation.securitiesValue.toString(),
+        calculation.cashValue.toString(),
+        calculation.totalValue.toString(),
+        calculation.xirr?.toString() ?? null,
+        JSON.stringify(calculation.diagnostics),
+        JSON.stringify(
+          calculation.fxQuotes.map((quote) => ({
+            currency: quote.currency,
+            rateToPln: quote.rateToPln.toString(),
+            requestedDate: quote.requestedDate,
+            effectiveDate: quote.effectiveDate,
+            tableNo: quote.tableNo,
+            source: quote.source,
+          })),
+        ),
+        ...capital,
+      ),
+  ];
+
+  for (const account of portfolio.accounts) {
+    const accountId = crypto.randomUUID();
+    statements.push(
+      ...insertStatements(
+        db,
+        "portfolio_accounts",
+        ["id", "import_id", "account_fingerprint", "currency", "report_from", "report_to"],
+        [
+          [
+            accountId,
+            importId,
+            await sha256Hex(account.accountNumber),
+            account.currency,
+            account.reportFrom,
+            account.reportTo,
+          ],
+        ],
+      ),
+    );
+    statements.push(
+      ...insertStatements(
+        db,
+        "portfolio_cash_operations",
+        [
+          "import_id",
+          "account_id",
+          "operation_key",
+          "operation_type",
+          "occurred_at",
+          "amount",
+          "currency",
+          "product",
+          "classification",
+        ],
+        account.cashOperations.map((operation) => [
+          importId,
+          accountId,
+          operation.operationId,
+          operation.type,
+          operation.occurredAt,
+          operation.amount.toString(),
+          account.currency,
+          operation.product,
+          classifyOperation(operation, account.currency).classification,
+        ]),
+      ),
+    );
+    statements.push(
+      ...insertStatements(
+        db,
+        "portfolio_snapshots",
+        ["import_id", "account_id", "product", "currency", "valuation_at", "securities_value", "cash_value"],
+        account.snapshots.map((snapshot) => [
+          importId,
+          accountId,
+          snapshot.product,
+          snapshot.currency,
+          snapshot.valuationAt,
+          snapshot.securitiesValue.toString(),
+          snapshot.reconstructedCash.toString(),
+        ]),
+      ),
+    );
+  }
+
+  try {
+    await runStatements(db, statements);
+  } catch (error) {
+    // Foreign keys cascade, so deleting the parent removes any partially written children.
+    await db
+      .prepare("DELETE FROM portfolio_imports WHERE id = ?")
+      .bind(importId)
+      .run()
+      .catch(() => undefined);
+    throw new Error(`Nie udało się zapisać importu portfela: ${errorDetail(error)}`);
+  }
+  return importId;
 }
 
 export async function savePortfolioHistory(
-  client: SupabaseClient,
+  db: D1Database,
   importId: string,
-  ownerId: string,
   baseCurrency: string,
   points: HistoryPoint[],
 ): Promise<void> {
-  const rows = points.map((point) => ({
-    owner_id: ownerId,
-    import_id: importId,
-    date: point.date,
-    base_currency: baseCurrency,
-    total_value: point.totalValue.toString(),
-    net_invested_capital: point.netInvestedCapital.toString(),
-    total_profit: point.totalProfit.toString(),
-    benchmark_value: point.benchmarkValue?.toString() ?? null,
-    msci_world_value: point.msciWorldValue?.toString() ?? null,
-    nasdaq_100_value: point.nasdaq100Value?.toString() ?? null,
-    emerging_markets_value: point.emergingMarketsValue?.toString() ?? null,
-    semiconductor_value: point.semiconductorValue?.toString() ?? null,
-  }));
-  for (let index = 0; index < rows.length; index += 2000) {
-    const { error } = await client.from("portfolio_history_points").upsert(rows.slice(index, index + 2000), {
-      onConflict: "owner_id,date,base_currency",
-    });
-    if (error) throw new Error(`Nie udało się zapisać historii portfela: ${error.message}`);
+  const rows: Value[][] = points.map((point) => [
+    importId,
+    point.date,
+    baseCurrency,
+    point.totalValue.toString(),
+    point.netInvestedCapital.toString(),
+    point.totalProfit.toString(),
+    point.benchmarkValue?.toString() ?? null,
+    point.msciWorldValue?.toString() ?? null,
+    point.nasdaq100Value?.toString() ?? null,
+    point.emergingMarketsValue?.toString() ?? null,
+    point.semiconductorValue?.toString() ?? null,
+  ]);
+  try {
+    await runStatements(
+      db,
+      insertStatements(db, "portfolio_history_points", HISTORY_COLUMNS, rows, HISTORY_UPSERT_SUFFIX),
+    );
+  } catch (error) {
+    throw new Error(`Nie udało się zapisać historii portfela: ${errorDetail(error)}`);
   }
 }
 
 export async function saveOpenPositions(
-  client: SupabaseClient,
+  db: D1Database,
   importId: string,
-  ownerId: string,
   portfolio: ParsedXtbPortfolio,
 ): Promise<void> {
-  const rows = portfolio.accounts
-    .flatMap((account) =>
-      account.openPositions.map((position) => ({
-        owner_id: ownerId,
-        import_id: importId,
-        account_currency: account.currency,
-        product: position.product,
-        ticker: position.ticker,
-        instrument: position.instrument,
-        category: position.category,
-        volume: position.volume.toString(),
-        report_value: position.value.toString(),
-        report_profit: position.netProfit?.toString() ?? null,
-      })),
-    )
-    .filter((position) => position.ticker !== null);
-  const { error: deleteError } = await client.from("portfolio_open_positions").delete().eq("import_id", importId);
-  if (deleteError) throw new Error(`Nie udało się odświeżyć pozycji: ${deleteError.message}`);
-  if (rows.length === 0) return;
-  const { error } = await client.from("portfolio_open_positions").insert(rows);
-  if (error) throw new Error(`Nie udało się zapisać otwartych pozycji: ${error.message}`);
-
-  const cfdLots = portfolio.accounts.flatMap((account) =>
+  // The table is unique per (account currency, product, ticker). XTB lists each CFD position separately,
+  // so aggregate rows with the same key: summed volume and values give the same totals used by live valuation.
+  const positionsByKey = new Map<
+    string,
+    {
+      currency: string;
+      product: string;
+      ticker: string;
+      instrument: string;
+      category: string | null;
+      volume: Decimal;
+      value: Decimal;
+      profit: Decimal | null;
+    }
+  >();
+  for (const account of portfolio.accounts) {
+    for (const position of account.openPositions) {
+      if (position.ticker === null) continue;
+      const key = `${account.currency}|${position.product}|${position.ticker}`;
+      const existing = positionsByKey.get(key);
+      if (!existing) {
+        positionsByKey.set(key, {
+          currency: account.currency,
+          product: position.product,
+          ticker: position.ticker,
+          instrument: position.instrument,
+          category: position.category,
+          volume: position.volume,
+          value: position.value,
+          profit: position.netProfit,
+        });
+        continue;
+      }
+      existing.volume = existing.volume.plus(position.volume);
+      existing.value = existing.value.plus(position.value);
+      if (position.netProfit !== null) existing.profit = (existing.profit ?? new Decimal(0)).plus(position.netProfit);
+    }
+  }
+  const positionRows: Value[][] = [...positionsByKey.values()].map((position) => [
+    importId,
+    position.currency,
+    position.product,
+    position.ticker,
+    position.instrument,
+    position.category,
+    position.volume.toString(),
+    position.value.toString(),
+    position.profit?.toString() ?? null,
+  ]);
+  const cfdRows: Value[][] = portfolio.accounts.flatMap((account) =>
     account.positionLots
       .filter((lot) => lot.closeAt === null && lot.category.trim().toUpperCase() === "CFD")
-      .map((lot) => ({
-        owner_id: ownerId,
-        import_id: importId,
-        account_currency: account.currency,
-        ticker: lot.ticker,
-        position_key: lot.positionId,
-        direction: lot.type.trim().toUpperCase().includes("SELL") ? "SELL" : "BUY",
-        volume: lot.volume.toString(),
-        open_price: lot.openPrice.toString(),
-      })),
+      .map((lot) => [
+        importId,
+        account.currency,
+        lot.ticker,
+        lot.positionId,
+        lot.type.trim().toUpperCase().includes("SELL") ? "SELL" : "BUY",
+        lot.volume.toString(),
+        lot.openPrice.toString(),
+      ]),
   );
-  const { error: cfdDeleteError } = await client.from("portfolio_open_cfd_lots").delete().eq("import_id", importId);
-  if (cfdDeleteError) throw new Error(`Nie udało się odświeżyć CFD: ${cfdDeleteError.message}`);
-  if (cfdLots.length > 0) {
-    const { error: cfdError } = await client.from("portfolio_open_cfd_lots").insert(cfdLots);
-    if (cfdError) throw new Error(`Nie udało się zapisać CFD: ${cfdError.message}`);
+
+  try {
+    await runStatements(db, [
+      db.prepare("DELETE FROM portfolio_open_positions WHERE import_id = ?").bind(importId),
+      ...insertStatements(db, "portfolio_open_positions", POSITION_COLUMNS, positionRows),
+      db.prepare("DELETE FROM portfolio_open_cfd_lots WHERE import_id = ?").bind(importId),
+      ...insertStatements(db, "portfolio_open_cfd_lots", CFD_LOT_COLUMNS, cfdRows),
+    ]);
+  } catch (error) {
+    throw new Error(`Nie udało się zapisać otwartych pozycji: ${errorDetail(error)}`);
   }
 }
