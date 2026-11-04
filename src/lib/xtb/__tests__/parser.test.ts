@@ -7,6 +7,15 @@ import { excelSerialToIso, normalizeIdentifier } from "../normalize";
 import { createPortfolioZip, createWorkbook } from "./fixture";
 
 describe("XTB parser", () => {
+  it("marks a report as incomplete when positions were opened before its start date", () => {
+    const full = parseXtbPortfolio(createWorkbook(), "full.xlsx");
+    expect(full.accounts[0].isFullHistory).toBe(true);
+
+    // 46023 is 2026-01-01, after the fixture's positions were opened in 2025.
+    const partial = parseXtbPortfolio(createWorkbook({ dateFrom: "46023" }), "partial.xlsx");
+    expect(partial.accounts[0].isFullHistory).toBe(false);
+  });
+
   it("parses a single IKE workbook and reconstructs cash", () => {
     const parsed = parseXtbPortfolio(createWorkbook(), "IKE_report.xlsx");
     const account = parsed.accounts[0];

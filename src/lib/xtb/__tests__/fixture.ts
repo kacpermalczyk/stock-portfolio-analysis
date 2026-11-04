@@ -37,7 +37,10 @@ export function createWorkbook(options?: {
   currency?: string;
   empty?: boolean;
   cfd?: boolean;
+  /** Excel serial of the report start date; defaults to 2006-01-01. */
+  dateFrom?: string;
 }): Uint8Array {
+  const dateFrom = options?.dateFrom ?? "38718";
   const account = options?.account ?? "10001";
   const currency = options?.currency ?? "PLN";
   const product = options?.cfd ? "My Trades" : currency === "PLN" ? "IKE" : "My Trades";
@@ -45,7 +48,7 @@ export function createWorkbook(options?: {
   const cashRows = [
     ["Account number", account],
     ["Cash Operations", ""],
-    ["Date from (UTC)", "38718"],
+    ["Date from (UTC)", dateFrom],
     ["Date to (UTC)", "46235.5"],
     ["Type", "Instrument", "Ticker", "Category", "Time", "Amount", "ID", "Comment", "Product", "Position ID"],
     ...(empty
@@ -112,7 +115,7 @@ export function createWorkbook(options?: {
   const closedRows = [
     ["Account number", account],
     ["Closed Positions", ""],
-    ["Date from (UTC)", "38718"],
+    ["Date from (UTC)", dateFrom],
     ["Date to (UTC)", "46235.5"],
     [
       "Instrument",

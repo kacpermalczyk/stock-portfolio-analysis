@@ -48,8 +48,11 @@ export const POST: APIRoute = async (context) => {
     try {
       history = await reconstructHistory(portfolio, calculation, priceClient);
       await savePortfolioHistory(db, importId, calculation.baseCurrency, history.points);
-    } catch {
+    } catch (error) {
       // The portfolio calculation is complete; history can be rebuilt on the next import.
+      console.error("Portfolio history reconstruction failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
 
     return Response.json({

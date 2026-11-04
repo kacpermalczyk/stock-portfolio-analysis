@@ -222,7 +222,7 @@ function parseSnapshots(
   }
   const profitByProduct = new Map<string, Decimal>();
   for (const row of rows.slice(summaryIndex + 1)) {
-    if (!PROFIT_METRICS.includes(get(row, headers, "Metric") ?? "")) continue;
+    if (!PROFIT_METRICS.includes(get(row, headers, "Metric"))) continue;
     const product = get(row, headers, "Product");
     if (!product) continue;
     profitByProduct.set(
@@ -236,7 +236,7 @@ function parseSnapshots(
   }
 
   return rows.slice(summaryIndex + 1).flatMap((row) => {
-    if (!VALUE_METRICS.includes(get(row, headers, "Metric") ?? "")) return [];
+    if (!VALUE_METRICS.includes(get(row, headers, "Metric"))) return [];
     const product = get(row, headers, "Product");
     if (!product) return [];
     const currency = currencyFrom(get(row, headers, "Currency"), product, sourceName);
@@ -313,13 +313,16 @@ function parseWorkbook(bytes: Uint8Array, sourceName: string): XtbAccountReport 
     (earliest, operation) => (!earliest || operation.occurredAt < earliest ? operation.occurredAt : earliest),
     null,
   );
-  const isFullHistory = !firstOperation || reportFrom <= firstOperation;
-
   let closedPositionLots: XtbPositionLot[] = [];
   if (workbook.sheetNames().includes("Closed Positions")) {
     const closedRows = workbook.rows("Closed Positions");
     closedPositionLots = parseClosedPositionLots(closedRows, accountNumber, sourceName);
   }
+
+  // A position opened before the report start means earlier activity (deposits, purchases) is missing,
+  // so cash reconstruction and XIRR would be wrong.
+  const openedBeforeReport = [...closedPositionLots, ...openPositionLots].some((lot) => lot.openAt < reportFrom);
+  const isFullHistory = (!firstOperation || reportFrom <= firstOperation) && !openedBeforeReport;
 
   return {
     sourceName,

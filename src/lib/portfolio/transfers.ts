@@ -26,8 +26,9 @@ function pickBestMatch(
       timeGap: Math.abs(Date.parse(outgoing.operation.occurredAt) - Date.parse(match.incoming.operation.occurredAt)),
     }))
     .sort((left, right) => left.timeGap - right.timeGap || left.difference.comparedTo(right.difference));
-  const [first, second] = ranked;
-  if (second && second.timeGap === first.timeGap && second.difference.equals(first.difference)) return null;
+  const [first] = ranked;
+  const second = ranked.at(1);
+  if (second?.timeGap === first.timeGap && second.difference.equals(first.difference)) return null;
   return first;
 }
 

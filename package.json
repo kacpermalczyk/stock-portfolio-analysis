@@ -13,6 +13,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:reset": "rm -rf .wrangler/state/v3/d1 && wrangler d1 migrations apply DB --local",
     "auth:hash-password": "node scripts/hash-password.mjs"
   },
   "dependencies": {

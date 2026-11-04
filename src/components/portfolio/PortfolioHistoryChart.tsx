@@ -75,6 +75,8 @@ export default function PortfolioHistoryChart({ points, currency }: { points: Po
   const container = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const [range, setRange] = useState<Range>("MAX");
+  // A custom start date overrides the preset range; everything is rebased to the first visible day.
+  const [customFrom, setCustomFrom] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [showSp500, setShowSp500] = useState(true);
   const [showMsciWorld, setShowMsciWorld] = useState(true);
@@ -83,9 +85,9 @@ export default function PortfolioHistoryChart({ points, currency }: { points: Po
   const [showSemiconductor, setShowSemiconductor] = useState(false);
   const [showInflation, setShowInflation] = useState(true);
   const visible = useMemo(() => {
-    const from = startDate(range, points.at(-1)?.date ?? "1970-01-01");
+    const from = customFrom ?? startDate(range, points.at(-1)?.date ?? "1970-01-01");
     return points.filter((point) => point.date >= from && point.netInvestedCapital !== 0);
-  }, [points, range]);
+  }, [points, range, customFrom]);
   const performance = useMemo(() => calculatePeriodPerformance(visible), [visible]);
   const active = performance.find((point) => point.date === selectedDate) ?? performance.at(-1);
   const activeReturn = active?.periodReturn ?? 0;
@@ -105,7 +107,7 @@ export default function PortfolioHistoryChart({ points, currency }: { points: Po
   const activeNasdaq100Return = benchmarkReturn("nasdaq100Value");
   const activeEmergingMarketsReturn = benchmarkReturn("emergingMarketsValue");
   const activeSemiconductorReturn = benchmarkReturn("semiconductorValue");
-  const firstInflation = points.find((point) => point.inflationValue != null)?.inflationValue ?? null;
+  const firstInflation = performance.find((point) => point.inflationValue != null)?.inflationValue ?? null;
   const activeInflation =
     active?.inflationValue != null && firstInflation != null && firstInflation !== 0
       ? (active.inflationValue / firstInflation - 1) * 100
@@ -247,7 +249,16 @@ export default function PortfolioHistoryChart({ points, currency }: { points: Po
       chartRef.current?.remove();
       chartRef.current = null;
     };
-  }, [firstInflation, performance, showEmergingMarkets, showInflation, showMsciWorld, showNasdaq100, showSemiconductor, showSp500]);
+  }, [
+    firstInflation,
+    performance,
+    showEmergingMarkets,
+    showInflation,
+    showMsciWorld,
+    showNasdaq100,
+    showSemiconductor,
+    showSp500,
+  ]);
 
   return (
     <section aria-labelledby="history-chart-title">
@@ -298,14 +309,29 @@ export default function PortfolioHistoryChart({ points, currency }: { points: Po
               type="button"
               onClick={() => {
                 setRange(item);
+                setCustomFrom(null);
                 setSelectedDate(null);
               }}
-              aria-pressed={range === item}
-              className={`min-h-10 rounded-lg px-3 text-sm font-medium ${range === item ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+              aria-pressed={customFrom === null && range === item}
+              className={`min-h-10 rounded-lg px-3 text-sm font-medium ${customFrom === null && range === item ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}
             >
               {item}
             </button>
           ))}
+          <label className="flex min-h-10 items-center gap-2 rounded-lg px-2 text-sm font-medium text-slate-600">
+            Od
+            <input
+              type="date"
+              value={customFrom ?? ""}
+              min={points[0]?.date}
+              max={points.at(-1)?.date}
+              onChange={(event) => {
+                setCustomFrom(event.target.value || null);
+                setSelectedDate(null);
+              }}
+              className={`min-h-10 rounded-lg border px-2 text-sm tabular-nums ${customFrom ? "border-slate-900 text-slate-950" : "border-slate-300 text-slate-700"}`}
+            />
+          </label>
         </div>
       </div>
 
